@@ -73,16 +73,17 @@ public class Order {
 Use the `TypeRegistry` to look up classes by their keys:
 
 ```java
+import io.github.cyfko.typeindex.TypeKeyRegistry;
 import io.github.cyfko.typeindex.TypeRegistry;
 
 // Check if a key exists
-if (TypeRegistry.canResolve("user-profile")) {
-    Class<?> userClass = TypeRegistry.resolve("user-profile");
-    // userClass is UserProfile.class
+if(TypeRegistry.canResolve("user-profile")){
+Class<?> userClass = TypeKeyRegistry.resolve("user-profile");
+// userClass is UserProfile.class
 }
 
 // Resolve with type checking
-Class<UserProfile> userClass = TypeRegistry.resolve("user-profile", UserProfile.class);
+Class<UserProfile> userClass = TypeKeyRegistry.resolve("user-profile", UserProfile.class);
 
 // Create instances
 Object instance = userClass.getDeclaredConstructor().newInstance();

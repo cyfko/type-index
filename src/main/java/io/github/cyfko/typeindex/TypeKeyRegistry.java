@@ -44,9 +44,9 @@ import java.util.stream.Collectors;
  * at first access to support reverse lookup via {@link #keyOf(Class)}.
  * </p>
  */
-public final class TypeRegistry {
+public final class TypeKeyRegistry {
 
-    private static final Logger log = Logger.getLogger(TypeRegistry.class.getName());
+    private static final Logger log = Logger.getLogger(TypeKeyRegistry.class.getName());
 
     /**
      * Singleton provider instance generated at compile time.
@@ -67,7 +67,7 @@ public final class TypeRegistry {
      */
     private static volatile Map<? extends Class<?>, String> REVERTED_REGISTRY;
 
-    private TypeRegistry() {
+    private TypeKeyRegistry() {
         // Utility class; not instantiable.
     }
 
@@ -88,7 +88,7 @@ public final class TypeRegistry {
      */
     public static RegistryProvider getRegistryProvider() {
         if (PROVIDER == null) {
-            synchronized (TypeRegistry.class) {
+            synchronized (TypeKeyRegistry.class) {
                 if (PROVIDER == null) {
                     PROVIDER = loadProvider();
 
