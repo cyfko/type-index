@@ -38,13 +38,23 @@ class TypeIndexProcessorTest {
                 "import io.github.cyfko.typeindex.TypeKey;",
                 "",
                 "@TypeKey(\"#1\")",
-                "public class Address {",
+                "public record Address() {",
                 "}"
+        );
+
+        JavaFileObject enumElement = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.MyEnum",
+                "package io.github.cyfko.example;",
+                "",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "",
+                "@TypeKey(\"my.enum#1\")",
+                "public enum MyEnum { DUMMY }"
         );
 
         Compilation compilation = Compiler.javac()
                 .withProcessors(new TypeIndexProcessor())
-                .compile(user, address);
+                .compile(user, address, enumElement);
 
         assertThat(compilation).succeeded();
 
@@ -57,6 +67,7 @@ class TypeIndexProcessorTest {
         // Verify both entries are present with correct format
         assertTrue(generatedCode.contains("Map.entry(\"my-key\", io.github.cyfko.example.User.class)"));
         assertTrue(generatedCode.contains("Map.entry(\"#1\", io.github.cyfko.example.Address.class)"));
+        assertTrue(generatedCode.contains("Map.entry(\"my.enum#1\", io.github.cyfko.example.MyEnum.class)"));
 
         // Verify @Generated annotation
         assertTrue(generatedCode.contains("@Generated(\"io.github.cyfko.typeindex.processor.TypeIndexProcessor\")"));

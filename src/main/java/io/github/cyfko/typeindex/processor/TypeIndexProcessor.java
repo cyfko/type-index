@@ -64,9 +64,12 @@ public final class TypeIndexProcessor extends AbstractProcessor {
 
         for (Element element : annotatedElements) {
 
-            if (element.getKind() != ElementKind.CLASS) {
+            if (! (element.getKind() == ElementKind.CLASS ||
+                    element.getKind() == ElementKind.RECORD ||
+                    element.getKind() == ElementKind.ENUM)
+            ) {
                 log.printMessage(Diagnostic.Kind.ERROR,
-                        "@TypeKey can only be applied to classes", element);
+                        "@TypeKey can only be applied to classes, records or enums", element);
                 hasErrors = true;
                 continue;
             }
@@ -163,7 +166,7 @@ public final class TypeIndexProcessor extends AbstractProcessor {
                 import javax.annotation.processing.Generated;
 
                 @Generated("io.github.cyfko.typeindex.processor.TypeIndexProcessor")
-                final class RegistryProviderImpl implements RegistryProvider {
+                public final class RegistryProviderImpl implements RegistryProvider {
 
                     private static final Map<String, Class<?>> REGISTRY = Map.ofEntries(
                 """);
