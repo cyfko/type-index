@@ -9,40 +9,68 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
- * Global static registry for resolving Java types referenced by a stable logical key.
+ * Global static registry for resolving Java types by a stable logical key.
  *
  * <p>
- * This registry is populated automatically by the {@code TypeIndexProcessor} annotation
- * processor, which generates a {@code RegistryProviderImpl} containing a statically
- * initialized map of keys to Java {@link Class} objects. The registry is exposed at
- * runtime through this {@code TypeRegistry} façade.
+ * Populated at build time by an annotation processor that generates a {@code RegistryProviderImpl}
+ * containing a static map of keys to {@link Class} objects. At runtime, this class exposes that
+ * registry and offers controlled fallbacks for primitives and classpath types when resolving keys.
  * </p>
  *
+ * <h2>Why</h2>
  * <p>
- * A typical use case is to store a stable key in a database instead of a fully-qualified
- * class name, thus avoiding breakage if classes are renamed or moved. The {@link TypeKey}
- * annotation ensures that each class explicitly declares its stable identifier, which is
- * then carried into the generated registry.
+ * Persist and exchange stable logical identifiers instead of fully-qualified class names to keep
+ * stored data resilient to refactors (renames, package moves). Classes participating in the
+ * application contract should declare {@link TypeKey}, which is validated and indexed at compile time.
  * </p>
  *
  * <h2>Usage</h2>
  * <pre>{@code
- * if (TypeRegistry.canResolve("UserDto")) {
- *     Class<?> type = TypeRegistry.resolve("UserDto");
+ * if (TypeKeyRegistry.canResolve("UserDto")) {
+ *     Class<?> type = TypeKeyRegistry.resolve("UserDto");
  * }
  *
- * // With type assertion:
- * Class<UserDto> userType = TypeRegistry.resolve("UserDto", UserDto.class);
+ * // With type assertion
+ * Class<UserDto> userType = TypeKeyRegistry.resolve("UserDto", UserDto.class);
  *
- * // Reverse lookup from class to key:
- * String key = TypeRegistry.keyOf(UserDto.class);
+ * // Reverse lookup from class to key
+ * String key = TypeKeyRegistry.keyOf(UserDto.class);
  * }</pre>
  *
+ * <h2>Lifecycle</h2>
  * <p>
- * The registry is lazily loaded using double-checked locking to minimize overhead
- * and ensure thread safety. A reverse registry (class → key) is also built lazily
- * at first access to support reverse lookup via {@link #keyOf(Class)}.
+ * The provider and reverse map are initialized lazily on first access using double-checked locking.
+ * The reverse map enables fast class → key lookup (for serialization and persistence).
  * </p>
+ *
+ * <h2>Resolution Strategy</h2>
+ * <p>
+ * Resolving a key to a {@link Class} proceeds in tiers:
+ * </p>
+ * <ol>
+ *   <li><b>Generated registry</b>: keys of {@code @TypeKey}-annotated application types.</li>
+ *   <li><b>Java primitives</b>: string names of primitive types, e.g. "int" → int.class.</li>
+ *   <li><b>Classpath class</b>: best‑effort {@code Class.forName(key)} for FQCNs.</li>
+ * </ol>
+ *
+ * <h2>Reverse Lookup Strategy</h2>
+ * <p>
+ * Converting a {@link Class} to a key proceeds as:
+ * </p>
+ * <ol>
+ *   <li><b>Generated reverse registry</b>: {@code @TypeKey}-annotated types.</li>
+ *   <li><b>Java primitives</b>: primitive class → its language name (e.g., boolean.class → "boolean").</li>
+ *   <li><b>Arrays</b>: resolve component key and append {@code []}.</li>
+ *   <li><b>Fallback</b>: fully-qualified class name.</li>
+ * </ol>
+ *
+ * <p>
+ * For application classes, prefer {@code @TypeKey} to avoid leaking implementation names into
+ * persisted keys. Without {@code @TypeKey}, reverse lookup falls back to the FQCN.
+ * </p>
+ *
+ * @author Frank KOSSI
+ * @since 1.0.0
  */
 public final class TypeKeyRegistry {
 
@@ -73,7 +101,6 @@ public final class TypeKeyRegistry {
 
     /**
      * Returns the generated {@link RegistryProvider}.
-     *
      * <p>
      * On first invocation, this method:
      * </p>
@@ -105,7 +132,6 @@ public final class TypeKeyRegistry {
 
     /**
      * Loads the auto-generated {@code RegistryProviderImpl} using reflection.
-     *
      * <p>
      * If the generated class cannot be found (for example, because annotation
      * processing was disabled), an error is logged and a no-op provider is
@@ -140,10 +166,15 @@ public final class TypeKeyRegistry {
     }
 
     /**
-     * Checks whether the registry contains a class for the given logical key.
+     * Checks whether the generated registry contains a class for the given logical key.
+     * <p>
+     * This method only checks the generated {@code @TypeKey} registry and does
+     * <em>not</em> consider fallback mechanisms (primitives, Java standard library).
+     * Use {@link #resolve(String)} to attempt full resolution with fallbacks.
+     * </p>
      *
      * @param key Logical type identifier; must not be {@code null}.
-     * @return {@code true} if the registry contains a mapping for this key;
+     * @return {@code true} if the generated registry contains a mapping for this key;
      *         {@code false} otherwise.
      * @throws NullPointerException If {@code key} is {@code null}.
      */
@@ -153,31 +184,54 @@ public final class TypeKeyRegistry {
     }
 
     /**
-     * Resolves a type by its logical key.
+     * Resolves a type by its logical key using a multi-tiered fallback strategy.
+     * <p>
+     * Resolution proceeds as follows:
+     * </p>
+     * <ol>
+     *   <li><b>Generated registry</b>: Looks up {@code @TypeKey}-annotated types.</li>
+     *   <li><b>Java primitives</b>: Maps {@code "boolean"} → {@code boolean.class}, etc.</li>
+     *   <li><b>Classpath class</b>: Loads {@code "java.util.List"} → {@code List.class}.</li>
+     * </ol>
      *
      * @param key Logical type identifier; must not be {@code null}.
-     * @return The class associated with the given key.
+     * @return The resolved {@link Class} for the given key.
      * @throws NullPointerException  If {@code key} is {@code null}.
-     * @throws IllegalStateException If no class is mapped for the given key.
+     * @throws IllegalStateException If no mapping exists for the given key in any tier.
      */
     public static Class<?> resolve(String key) {
         Objects.requireNonNull(key, "key cannot be null");
-        Class<?> type = getRegistryProvider().getRegistry().get(key);
 
-        if (type == null) {
-            throw new IllegalStateException("No type mapped for key: " + key);
+        // 1. Registry
+        Class<?> type = getRegistryProvider().getRegistry().get(key);
+        if (type != null) return type;
+
+        // 2. Primitives
+        switch (key) {
+            case "boolean": return boolean.class;
+            case "byte":    return byte.class;
+            case "short":   return short.class;
+            case "int":     return int.class;
+            case "long":    return long.class;
+            case "float":   return float.class;
+            case "double":  return double.class;
+            case "char":    return char.class;
         }
 
-        return type;
+        // 3. Generic fallback: try to load class anywhere on the classpath
+        try {
+            return Class.forName(key);
+        } catch (ClassNotFoundException e) {
+            throw new IllegalStateException("Type not found: " + key, e);
+        }
     }
 
     /**
      * Resolves the type by key and verifies that it matches the expected class.
-     *
      * <p>
-     * This overload provides an additional safety check: it ensures the registry
-     * entry for {@code key} is exactly {@code targetType}. If the mapping does
-     * not match, an {@link IllegalArgumentException} is thrown.
+     * This overload provides an additional safety check: it ensures the resolved type
+     * (including fallbacks) is exactly {@code targetType}. If the mapping does not match,
+     * an {@link IllegalArgumentException} is thrown.
      * </p>
      *
      * @param key        Logical type identifier; must not be {@code null}.
@@ -185,53 +239,59 @@ public final class TypeKeyRegistry {
      * @param <T>        The expected type parameter.
      * @return The {@code targetType} if the mapping is valid.
      * @throws NullPointerException     If {@code key} or {@code targetType} is {@code null}.
-     * @throws IllegalArgumentException If the registry mapping does not match {@code targetType}.
+     * @throws IllegalArgumentException If the resolved type does not match {@code targetType}.
      */
     public static <T> Class<T> resolve(String key, Class<T> targetType) {
         Objects.requireNonNull(key, "key cannot be null");
         Objects.requireNonNull(targetType, "targetType cannot be null");
 
-        Class<?> mapped = getRegistryProvider().getRegistry().get(key);
+        Class<?> mapped = resolve(key);
 
         if (!targetType.equals(mapped)) {
             throw new IllegalArgumentException(
-                    "Registry mismatch for key '" + key + "'. Expected: "
-                            + targetType.getName() + ", found: " + mapped
+                    "Registry mismatch for key '" + key + "'. Expected: " +
+                            targetType.getName() + ", found: " + mapped.getName()
             );
         }
 
-        return targetType;
+        //noinspection unchecked
+        return (Class<T>) mapped;
     }
 
     /**
-     * Returns the logical {@link TypeKey} value associated with the given annotated class.
-     *
+     * Returns the logical {@link TypeKey} value associated with the given class.
      * <p>
-     * This method performs the reverse lookup: given a class that was annotated
-     * with {@code @TypeKey}, it returns the stable key that was used in the
-     * generated registry. This is useful when you need to persist or publish
-     * the key corresponding to a known type.
+     * This method performs reverse lookup using a multi-tiered strategy:
      * </p>
+     * <ol>
+     *   <li><b>Generated reverse registry</b>: {@code @TypeKey}-annotated types.</li>
+     *   <li><b>Java primitives</b>: {@code boolean.class → "boolean"}.</li>
+     *   <li><b>Arrays</b>: Recursively resolve component + {@code "[]"} suffix.</li>
+     *   <li><b>Fallback</b>: fully-qualified class name.</li>
+     * </ol>
      *
-     * @param annotatedClass Class annotated with {@link TypeKey}; must not be {@code null}.
-     * @return The stable logical key associated with {@code annotatedClass}.
-     * @throws NullPointerException  If {@code annotatedClass} is {@code null}.
-     * @throws IllegalStateException If no key is mapped for the given class
-     *                               (for example, if the class is not annotated
-     *                               with {@code @TypeKey}, or annotation processing
-     *                               did not generate a registry for it).
+     * @param type Class to lookup; must not be {@code null}.
+     * @return The stable logical key for this class.
+     * @throws NullPointerException  If {@code type} is {@code null}.
+     * @throws IllegalStateException If no key can be determined for the class.
      */
-    public static String keyOf(Class<?> annotatedClass) {
-        Objects.requireNonNull(annotatedClass, "annotatedClass cannot be null");
+    public static String keyOf(Class<?> type) {
+        Objects.requireNonNull(type, "type cannot be null");
         getRegistryProvider(); // Ensure provider and reverse registry are initialized.
 
-        if (!REVERTED_REGISTRY.containsKey(annotatedClass)) {
-            throw new IllegalStateException(
-                    "No key mapped for: " + annotatedClass.getCanonicalName()
-            );
+        // Registry lookup
+        String key = REVERTED_REGISTRY.get(type);
+        if (key != null) return key;
+
+        // Primitives
+        if (type.isPrimitive()) return type.getName();
+
+        // Arrays
+        if (type.isArray()) {
+            return keyOf(type.getComponentType()) + "[]";
         }
 
-        return REVERTED_REGISTRY.get(annotatedClass);
+        // Generic fallback: fully qualified name
+        return type.getName();
     }
 }
-
