@@ -53,10 +53,6 @@ public final class TypeIndexProcessor extends AbstractProcessor {
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment env) {
-        if (annotations.isEmpty()) {
-            return false;
-        }
-
         Messager log = processingEnv.getMessager();
 
         Set<? extends Element> annotatedElements = env.getElementsAnnotatedWith(TypeKey.class);

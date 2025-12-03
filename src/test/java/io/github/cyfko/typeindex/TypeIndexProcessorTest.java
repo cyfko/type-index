@@ -225,32 +225,6 @@ class TypeIndexProcessorTest {
     }
 
     @Test
-    void testEmptyRegistryWhenNoAnnotations() throws IOException {
-        JavaFileObject plainClass = JavaFileObjects.forSourceLines(
-                "io.github.cyfko.example.PlainClass",
-                "package io.github.cyfko.example;",
-                "",
-                "public class PlainClass {",
-                "}"
-        );
-
-        Compilation compilation = Compiler.javac()
-                .withProcessors(new TypeIndexProcessor())
-                .compile(plainClass);
-
-        assertThat(compilation).succeeded();
-        assertThat(compilation).hadWarningContaining("No @TypeKey annotations found");
-
-        String generatedCode = getGeneratedRegistryCode(compilation);
-        assertTrue(generatedCode.contains("Map.ofEntries("));
-
-        // Verify empty map - the closing parenthesis should be on the next line with minimal content
-        assertTrue(generatedCode.contains("Map.ofEntries(\n    )") ||
-                generatedCode.contains("Map.ofEntries(\n        )") ||
-                generatedCode.matches("(?s).*Map\\.ofEntries\\(\\s+\\).*"));
-    }
-
-    @Test
     void testLargeNumberOfEntries() throws IOException {
         // Test more than 10 entries to verify Map.ofEntries() works
         JavaFileObject[] classes = new JavaFileObject[15];

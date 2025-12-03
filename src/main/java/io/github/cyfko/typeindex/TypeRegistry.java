@@ -3,7 +3,9 @@ package io.github.cyfko.typeindex;
 import io.github.cyfko.typeindex.providers.RegistryProvider;
 
 import java.lang.reflect.InvocationTargetException;
+import java.util.Map;
 import java.util.Objects;
+import java.util.logging.Logger;
 
 /**
  * Global static registry for resolving Java types referenced by a stable logical key.
@@ -28,6 +30,7 @@ import java.util.Objects;
  * and ensure thread safety.
  */
 public final class TypeRegistry {
+    private static final Logger log = Logger.getLogger(TypeRegistry.class.getName());
 
     /**
      * Singleton provider instance generated at compile-time.
@@ -67,13 +70,13 @@ public final class TypeRegistry {
             return (RegistryProvider) cls.getConstructor().newInstance();
 
         } catch (ClassNotFoundException e) {
-            throw new IllegalStateException("""
+            log.severe("""
                 Cannot load the generated registry.
                 Expected generated class: io.github.cyfko.typeindex.providers.RegistryProviderImpl
                 Ensure that the annotation processor has run and your build
-                system is configured for annotation processing.
-                """, e);
-
+                system is configured for annotation processing. \n
+                """ + e);
+            return Map::of;
         } catch (InvocationTargetException | InstantiationException |
                  NoSuchMethodException | IllegalAccessException e) {
             throw new IllegalStateException("Failed to instantiate RegistryProviderImpl", e);
