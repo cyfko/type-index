@@ -19,7 +19,8 @@ import java.util.stream.Collectors;
  * <p>
  * Populated at build time by an annotation processor that generates a {@code RegistryProviderImpl}
  * containing a static map of keys to {@link Class} objects. At runtime, this class exposes that
- * registry and offers controlled fallbacks for primitives and classpath types when resolving keys.
+ * registry and offers controlled fallbacks for primitives, arrays, and classpath types when
+ * resolving logical keys.
  * </p>
  *
  * <h2>Why</h2>
@@ -27,16 +28,17 @@ import java.util.stream.Collectors;
  * Persist and exchange stable logical identifiers instead of fully-qualified class names to keep
  * stored data resilient to refactors (renames, package moves). Classes participating in the
  * application contract should declare {@link TypeKey}, which is validated and indexed at compile time.
+ * When {@code @TypeKey} is not present, the fully-qualified class name is used as a fallback key.
  * </p>
  *
  * <h2>Usage</h2>
  * <pre>{@code
- * if (TypeKeyRegistry.canResolve("UserDto")) {
- *     Class<?> type = TypeKeyRegistry.resolve("UserDto");
+ * if (TypeKeyRegistry.canResolve("user-dto")) {
+ *     Class<?> type = TypeKeyRegistry.resolve("user-dto");
  * }
  *
  * // With type assertion
- * Class<UserDto> userType = TypeKeyRegistry.resolve("UserDto", UserDto.class);
+ * Class<UserDto> userType = TypeKeyRegistry.resolve("user-dto", UserDto.class);
  *
  * // Reverse lookup from class to key
  * String key = TypeKeyRegistry.keyOf(UserDto.class);
@@ -54,8 +56,9 @@ import java.util.stream.Collectors;
  * </p>
  * <ol>
  *   <li><b>Generated registry</b>: keys of {@code @TypeKey}-annotated application types.</li>
- *   <li><b>Java primitives</b>: string names of primitive types, e.g. "int" → int.class.</li>
- *   <li><b>Classpath class</b>: best‑effort {@code Class.forName(key)} for FQCNs.</li>
+ *   <li><b>Arrays</b>: suffix {@code "[]"} resolved recursively via the component key.</li>
+ *   <li><b>Java primitives</b>: string names of primitive types, e.g. {@code "int"} → {@code int.class}.</li>
+ *   <li><b>Classpath class</b>: best‑effort {@link Class#forName(String)} for FQCNs.</li>
  * </ol>
  *
  * <h2>Reverse Lookup Strategy</h2>
@@ -64,8 +67,8 @@ import java.util.stream.Collectors;
  * </p>
  * <ol>
  *   <li><b>Generated reverse registry</b>: {@code @TypeKey}-annotated types.</li>
- *   <li><b>Java primitives</b>: primitive class → its language name (e.g., boolean.class → "boolean").</li>
- *   <li><b>Arrays</b>: resolve component key and append {@code []}.</li>
+ *   <li><b>Java primitives</b>: primitive class → its language name (e.g., {@code boolean.class → "boolean"}).</li>
+ *   <li><b>Arrays</b>: resolve component key and append {@code "[]"}.</li>
  *   <li><b>Fallback</b>: fully-qualified class name.</li>
  * </ol>
  *
@@ -182,16 +185,16 @@ public final class TypeKeyRegistry {
     }
 
     /**
-     * Checks whether the generated registry contains a class for the given logical key.
+     * Checks whether a type can be resolved for the given logical key.
+     *
      * <p>
-     * This method only checks the generated {@code @TypeKey} registry and does
-     * <em>not</em> consider fallback mechanisms (primitives, Java standard library).
-     * Use {@link #resolve(String)} to attempt full resolution with fallbacks.
+     * This method delegates to {@link #resolve(String)} and returns {@code true} if resolution
+     * succeeds without throwing an exception. It therefore considers all resolution tiers:
+     * generated registry, arrays, primitives, and classpath lookups.
      * </p>
      *
      * @param key Logical type identifier; must not be {@code null}.
-     * @return {@code true} if the generated registry contains a mapping for this key;
-     *         {@code false} otherwise.
+     * @return {@code true} if {@link #resolve(String)} succeeds, {@code false} otherwise.
      * @throws NullPointerException If {@code key} is {@code null}.
      */
     public static boolean canResolve(String key) {
@@ -206,13 +209,14 @@ public final class TypeKeyRegistry {
 
     /**
      * Resolves a type by its logical key using a multi-tiered fallback strategy.
-     * <p>
-     * Resolution proceeds as follows:
-     * </p>
+     *
+     * <p>Resolution proceeds as follows:</p>
      * <ol>
      *   <li><b>Generated registry</b>: Looks up {@code @TypeKey}-annotated types.</li>
+     *   <li><b>Arrays</b>: Keys ending with {@code "[]"} are resolved recursively via the
+     *       component key.</li>
      *   <li><b>Java primitives</b>: Maps {@code "boolean"} → {@code boolean.class}, etc.</li>
-     *   <li><b>Classpath class</b>: Loads {@code "java.util.List"} → {@code List.class}.</li>
+     *   <li><b>Classpath class</b>: Attempts {@link Class#forName(String)} on the remaining key.</li>
      * </ol>
      *
      * @param key Logical type identifier; must not be {@code null}.
@@ -248,6 +252,7 @@ public final class TypeKeyRegistry {
 
     /**
      * Resolves the type by key and verifies that it matches the expected class.
+     *
      * <p>
      * This overload provides an additional safety check: it ensures the resolved type
      * (including fallbacks) is exactly {@code targetType}. If the mapping does not match,
@@ -280,6 +285,7 @@ public final class TypeKeyRegistry {
 
     /**
      * Returns the logical {@link TypeKey} value associated with the given class.
+     *
      * <p>
      * This method performs reverse lookup using a multi-tiered strategy:
      * </p>
@@ -290,10 +296,14 @@ public final class TypeKeyRegistry {
      *   <li><b>Fallback</b>: fully-qualified class name.</li>
      * </ol>
      *
+     * <p>
+     * For application classes, annotating with {@link TypeKey} is strongly recommended so
+     * that keys remain stable even if the class name or package changes.
+     * </p>
+     *
      * @param type Class to lookup; must not be {@code null}.
      * @return The stable logical key for this class.
-     * @throws NullPointerException  If {@code type} is {@code null}.
-     * @throws IllegalStateException If no key can be determined for the class.
+     * @throws NullPointerException If {@code type} is {@code null}.
      */
     public static String keyOf(Class<?> type) {
         Objects.requireNonNull(type, "type cannot be null");
@@ -321,21 +331,29 @@ public final class TypeKeyRegistry {
 
     /**
      * Wraps an array of method parameters into {@link ParamEnvelope} instances,
-     * preserving the declared runtime type of each argument.
+     * preserving the runtime type of each argument.
      *
-     * <p>This method extracts the runtime class of every parameter and converts
-     * it into a type key using {@code keyOf(Class<?>)} from the type registry.
-     * Each parameter is then wrapped without serializing it, allowing full
-     * flexibility for the caller to choose any serialization mechanism.</p>
+     * <p>
+     * This method inspects each parameter, derives its logical type key via
+     * {@link #keyOf(Class)}, and constructs a corresponding {@link ParamEnvelope}
+     * that stores both the key and the raw value. Values are <strong>not</strong>
+     * serialized here; the caller is free to choose any serialization mechanism later.
+     * </p>
      *
-     * <p>Null parameters are represented using a special {@code "null"} type key,
-     * which is interpreted by {@link #unwrap(List, BiFunction)}.</p>
+     * <p>
+     * {@code null} parameters are represented with a special {@code "null"} type key,
+     * which is interpreted by {@link #unwrap(List, BiFunction)} to restore {@code null}
+     * entries in the resulting array.
+     * </p>
      *
-     * <p>This is typically used for recording or transporting method arguments
-     * for deferred or remote execution.</p>
+     * <p>
+     * This is typically used to capture method arguments for deferred execution, logging,
+     * or remote dispatch while preserving precise type information.
+     * </p>
      *
-     * @param params Array of parameter values to wrap. May contain null elements.
-     * @return A list of {@link ParamEnvelope} preserving parameter types and values.
+     * @param params Array of parameter values to wrap; may contain {@code null} elements.
+     * @return A list of {@link ParamEnvelope} preserving parameter types and values,
+     *         never {@code null}.
      */
     public static List<ParamEnvelope> wrap(Object[] params){
         List<ParamEnvelope> list = new ArrayList<>(params.length);
@@ -354,32 +372,30 @@ public final class TypeKeyRegistry {
     }
 
     /**
-     * Reconstructs an array of parameters from a list of {@link ParamEnvelope},
-     * using a user-provided mapper function to convert the stored raw values
-     * into instances of their corresponding Java types.
+     * Reconstructs an array of parameters from a list of {@link ParamEnvelope} instances,
+     * using a user-provided mapper function to convert stored raw values into instances
+     * of their corresponding Java types.
      *
-     * <p>The {@code typeKey} inside each envelope is resolved into a concrete
-     * {@link Class} via {@code resolve(String)}. The mapper function is then
-     * invoked as:</p>
+     * <p>
+     * For each envelope:
+     * </p>
+     * <ul>
+     *   <li>If {@code typeKey} is {@code "null"}, the corresponding parameter is set to {@code null}.</li>
+     *   <li>Otherwise, {@link #resolve(String)} is used to obtain the target {@link Class}, and the
+     *       mapper is invoked as {@code mapper.apply(env.value(), resolvedType)}.</li>
+     * </ul>
      *
-     * <pre>{@code
-     * result[i] = mapper.apply(env.value(), resolvedType);
-     * }</pre>
+     * <p>
+     * This design decouples type resolution (handled by this registry) from actual deserialization
+     * (controlled by the caller), and works with any serialization library (Jackson, Gson, custom).
+     * </p>
      *
-     * <p>This indirection allows full decoupling from any specific serialization
-     * library (Jackson, Gson, BSON, custom binary protocol, etc.).</p>
-     *
-     * <p>The caller is responsible for providing a mapper implementation capable
-     * of converting the raw {@code value} into the target type, including arrays,
-     * DTOs, primitives, etc.</p>
-     *
-     * <p>Null values are reconstructed when the envelope typeKey is {@code "null"}.</p>
-     *
-     * @param envelopes List of wrapped parameters produced by {@link #wrap(Object[])}.
-     * @param mapper    Function that converts a raw value and expected type into
-     *                  an actual typed instance. Must not be null.
-     * @return A new array of parameters matching the original method arguments.
-     * @throws RuntimeException if a typeKey cannot be resolved or if mapping fails.
+     * @param envelopes List of wrapped parameters produced by {@link #wrap(Object[])}; must not be {@code null}.
+     * @param mapper    Function that converts a raw value and expected type into an actual typed instance;
+     *                  must not be {@code null}.
+     * @return A new array of parameters matching the original method arguments in size and order.
+     * @throws IllegalStateException If a {@code typeKey} cannot be resolved.
+     * @throws RuntimeException      If the mapper throws an exception during conversion.
      */
     public static Object[] unwrap(List<ParamEnvelope> envelopes, BiFunction<Object, Class<?>, Object> mapper) {
         Object[] params = new Object[envelopes.size()];
