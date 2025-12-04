@@ -1,10 +1,15 @@
 package io.github.cyfko.typeindex;
 
+import io.github.cyfko.typeindex.model.ParamEnvelope;
 import io.github.cyfko.typeindex.providers.RegistryProvider;
 
+import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BiFunction;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -95,6 +100,17 @@ public final class TypeKeyRegistry {
      */
     private static volatile Map<? extends Class<?>, String> REVERTED_REGISTRY;
 
+    private static final Map<String, Class<?>> PRIMITIVES = Map.of(
+            "int", int.class,
+            "long", long.class,
+            "boolean", boolean.class,
+            "double", double.class,
+            "float", float.class,
+            "short", short.class,
+            "byte", byte.class,
+            "char", char.class
+    );
+
     private TypeKeyRegistry() {
         // Utility class; not instantiable.
     }
@@ -180,7 +196,12 @@ public final class TypeKeyRegistry {
      */
     public static boolean canResolve(String key) {
         Objects.requireNonNull(key, "key cannot be null");
-        return getRegistryProvider().getRegistry().containsKey(key);
+        try {
+            resolve(key);
+            return true;
+        } catch (IllegalStateException e) {
+            return false;
+        }
     }
 
     /**
@@ -206,19 +227,18 @@ public final class TypeKeyRegistry {
         Class<?> type = getRegistryProvider().getRegistry().get(key);
         if (type != null) return type;
 
-        // 2. Primitives
-        switch (key) {
-            case "boolean": return boolean.class;
-            case "byte":    return byte.class;
-            case "short":   return short.class;
-            case "int":     return int.class;
-            case "long":    return long.class;
-            case "float":   return float.class;
-            case "double":  return double.class;
-            case "char":    return char.class;
+        // 2. Array handling
+        if (key.endsWith("[]")) {
+            String componentKey = key.substring(0, key.length() - 2);
+            Class<?> componentClass = resolve(componentKey); // recursive
+            return Array.newInstance(componentClass, 0).getClass();
         }
 
-        // 3. Generic fallback: try to load class anywhere on the classpath
+        // 3. Primitives
+        Class<?> primitive = PRIMITIVES.get(key);
+        if (primitive != null) return primitive;
+
+        // 4. Generic fallback: try to load class anywhere on the classpath
         try {
             return Class.forName(key);
         } catch (ClassNotFoundException e) {
@@ -278,20 +298,104 @@ public final class TypeKeyRegistry {
     public static String keyOf(Class<?> type) {
         Objects.requireNonNull(type, "type cannot be null");
         getRegistryProvider(); // Ensure provider and reverse registry are initialized.
+        return computeKey(type);
+    }
 
-        // Registry lookup
+    /** Compute key for a type, recursively handling arrays. */
+    private static String computeKey(Class<?> type) {
+        if (type.isArray()) {
+            return computeKey(type.getComponentType()) + "[]";
+        }
+
+        // primitive or registry
         String key = REVERTED_REGISTRY.get(type);
         if (key != null) return key;
 
-        // Primitives
-        if (type.isPrimitive()) return type.getName();
-
-        // Arrays
-        if (type.isArray()) {
-            return keyOf(type.getComponentType()) + "[]";
+        for (Map.Entry<String, Class<?>> entry : PRIMITIVES.entrySet()) {
+            if (entry.getValue().equals(type)) return entry.getKey();
         }
 
-        // Generic fallback: fully qualified name
+        // fallback
         return type.getName();
+    }
+
+    /**
+     * Wraps an array of method parameters into {@link ParamEnvelope} instances,
+     * preserving the declared runtime type of each argument.
+     *
+     * <p>This method extracts the runtime class of every parameter and converts
+     * it into a type key using {@code keyOf(Class<?>)} from the type registry.
+     * Each parameter is then wrapped without serializing it, allowing full
+     * flexibility for the caller to choose any serialization mechanism.</p>
+     *
+     * <p>Null parameters are represented using a special {@code "null"} type key,
+     * which is interpreted by {@link #unwrap(List, BiFunction)}.</p>
+     *
+     * <p>This is typically used for recording or transporting method arguments
+     * for deferred or remote execution.</p>
+     *
+     * @param params Array of parameter values to wrap. May contain null elements.
+     * @return A list of {@link ParamEnvelope} preserving parameter types and values.
+     */
+    public static List<ParamEnvelope> wrap(Object[] params){
+        List<ParamEnvelope> list = new ArrayList<>(params.length);
+
+        for (Object param : params) {
+            if (param == null) {
+                list.add(new ParamEnvelope("null", null));
+                continue;
+            }
+
+            String key = keyOf(param.getClass());
+            list.add(new ParamEnvelope(key, param));
+        }
+
+        return list;
+    }
+
+    /**
+     * Reconstructs an array of parameters from a list of {@link ParamEnvelope},
+     * using a user-provided mapper function to convert the stored raw values
+     * into instances of their corresponding Java types.
+     *
+     * <p>The {@code typeKey} inside each envelope is resolved into a concrete
+     * {@link Class} via {@code resolve(String)}. The mapper function is then
+     * invoked as:</p>
+     *
+     * <pre>{@code
+     * result[i] = mapper.apply(env.value(), resolvedType);
+     * }</pre>
+     *
+     * <p>This indirection allows full decoupling from any specific serialization
+     * library (Jackson, Gson, BSON, custom binary protocol, etc.).</p>
+     *
+     * <p>The caller is responsible for providing a mapper implementation capable
+     * of converting the raw {@code value} into the target type, including arrays,
+     * DTOs, primitives, etc.</p>
+     *
+     * <p>Null values are reconstructed when the envelope typeKey is {@code "null"}.</p>
+     *
+     * @param envelopes List of wrapped parameters produced by {@link #wrap(Object[])}.
+     * @param mapper    Function that converts a raw value and expected type into
+     *                  an actual typed instance. Must not be null.
+     * @return A new array of parameters matching the original method arguments.
+     * @throws RuntimeException if a typeKey cannot be resolved or if mapping fails.
+     */
+    public static Object[] unwrap(List<ParamEnvelope> envelopes, BiFunction<Object, Class<?>, Object> mapper) {
+        Object[] params = new Object[envelopes.size()];
+
+        for (int i = 0; i < envelopes.size(); i++) {
+            ParamEnvelope env = envelopes.get(i);
+
+            if ("null".equals(env.typeKey())) {
+                params[i] = null;
+                continue;
+            }
+
+            Class<?> type = resolve(env.typeKey());
+            params[i] = mapper.apply(env.value(), type);
+        }
+
+        return params;
     }
 }
