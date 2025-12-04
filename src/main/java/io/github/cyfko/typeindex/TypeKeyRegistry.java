@@ -111,7 +111,8 @@ public final class TypeKeyRegistry {
             "float", float.class,
             "short", short.class,
             "byte", byte.class,
-            "char", char.class
+            "char", char.class,
+            "none", void.class
     );
 
     private TypeKeyRegistry() {
