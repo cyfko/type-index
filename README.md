@@ -34,7 +34,7 @@ The registry is generated at compile-time using annotation processing, ensuring 
 <dependency>
     <groupId>io.github.cyfko</groupId>
     <artifactId>type-index</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
@@ -42,8 +42,8 @@ The registry is generated at compile-time using annotation processing, ensuring 
 
 ```gradle
 dependencies {
-    implementation 'io.github.cyfko:type-index:1.0.0'
-    annotationProcessor 'io.github.cyfko:type-index:1.0.0'
+    implementation 'io.github.cyfko:type-index:1.1.0'
+    annotationProcessor 'io.github.cyfko:type-index:1.1.0'
 }
 ```
 
