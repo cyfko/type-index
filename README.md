@@ -24,6 +24,7 @@ The registry is generated at compile-time using annotation processing, ensuring 
 - ✅ **Bidirectional lookup** - Map keys to classes AND classes to keys
 - ✅ **Multi-tier resolution** - Falls back to primitives and classpath types
 - ✅ **Record & Enum support** - Works with classes, records, and enums
+- ✅ **Non-intrusive configuration** - Define mappings externally via `@TypeKeyConfig` to keep your domains annotation-free (ideal for Hexagonal/Clean architectures)
 
 ## Installation
 
@@ -48,9 +49,12 @@ dependencies {
 
 ## Quick Start
 
-### 1. Annotate Your Types
+### 1. Register Your Types
 
-Use `@TypeKey` to assign stable identifiers to your classes, records, or enums:
+TypeIndex supports two methods for registering stable logical keys to Java types:
+
+#### Option A: Direct Registration (Intrusive)
+Ideal for standard applications where you have full control over the source classes. Simply annotate your classes, records, or enums with `@TypeKey`:
 
 ```java
 package com.example.domain;
@@ -71,6 +75,34 @@ public enum UserStatus {
     ACTIVE, INACTIVE, SUSPENDED
 }
 ```
+
+#### Option B: External Registration (Non-Intrusive)
+Perfect for **Hexagonal Architecture**, **Clean Architecture**, or **Domain-Driven Design (DDD)** where the core domain/business layer must be free from external framework annotations. You can define all mappings in a configuration interface using `@TypeKeyConfig`:
+
+```java
+package com.example.config;
+
+import io.github.cyfko.typeindex.TypeKey;
+import io.github.cyfko.typeindex.TypeKeyConfig;
+import com.example.domain.UserProfile;
+import com.example.domain.Order;
+import com.example.domain.UserStatus;
+
+@TypeKeyConfig
+public interface AppTypeKeys {
+
+    @TypeKey("user-profile")
+    UserProfile userProfile();
+
+    @TypeKey("order-v2")
+    Order order();
+
+    @TypeKey("status.active")
+    UserStatus status();
+}
+```
+
+*Note: Configuration interfaces are purely compile-time declarations, they are never instantiated. Methods in configuration interfaces must have zero parameters, return a concrete class/record/enum (no primitives, void, or parameterized types like `List<String>`), and have a unique `@TypeKey` value.*
 
 ### 2. Resolve Types at Runtime
 

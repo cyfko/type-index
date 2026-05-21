@@ -2,10 +2,13 @@ package io.github.cyfko.typeindex.processor;
 
 import com.google.auto.service.AutoService;
 import io.github.cyfko.typeindex.TypeKey;
+import io.github.cyfko.typeindex.TypeKeyConfig;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
+import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 import java.io.IOException;
@@ -19,9 +22,11 @@ import java.util.regex.Pattern;
  * <p>
  * The processor validates:
  * <ul>
- *     <li>that @TypeKey is used only on classes</li>
+ *     <li>that @TypeKey is used only on classes, records, or enums</li>
+ *     <li>that @TypeKeyConfig is used only on interfaces</li>
+ *     <li>that methods in @TypeKeyConfig interfaces have zero parameters and return a concrete class/record/enum</li>
  *     <li>that keys contain only allowed characters: alphanumeric, '.', '-', '#', '_'</li>
- *     <li>that keys are globally unique</li>
+ *     <li>that keys and target types are globally unique</li>
  * </ul>
  * At the end of processing, a class named
  * {@code io.github.cyfko.typeindex.providers.RegistryProviderImpl}
@@ -30,24 +35,34 @@ import java.util.regex.Pattern;
  * Compilation will fail if any validation errors are detected.
  */
 @AutoService(Processor.class)
-@SupportedAnnotationTypes("io.github.cyfko.typeindex.TypeKey")
+@SupportedAnnotationTypes({
+        "io.github.cyfko.typeindex.TypeKey",
+        "io.github.cyfko.typeindex.TypeKeyConfig"
+})
 @SupportedSourceVersion(SourceVersion.RELEASE_21)
 public final class TypeIndexProcessor extends AbstractProcessor {
 
     private static final Pattern VALID_KEY_PATTERN =
             Pattern.compile("^[a-zA-Z0-9.\\-#_]+$");
 
-    private final Map<String, TypeElementInfo> entries = new LinkedHashMap<>();
+    private final Map<String, RegistryEntry> keyToEntry = new LinkedHashMap<>();
+    private final Map<String, RegistryEntry> classToEntry = new LinkedHashMap<>();
     private boolean hasErrors = false;
     private boolean hasProcessedAnnotations = false;
 
-    private static class TypeElementInfo {
+    private static class RegistryEntry {
+        final String key;
         final String qualifiedName;
         final Element element;
+        final String source; // "direct" or "config"
+        final String declSource; // Description of where it was declared
 
-        TypeElementInfo(String qualifiedName, Element element) {
+        RegistryEntry(String key, String qualifiedName, Element element, String source, String declSource) {
+            this.key = key;
             this.qualifiedName = qualifiedName;
             this.element = element;
+            this.source = source;
+            this.declSource = declSource;
         }
     }
 
@@ -55,30 +70,28 @@ public final class TypeIndexProcessor extends AbstractProcessor {
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment env) {
         Messager log = processingEnv.getMessager();
 
-        Set<? extends Element> annotatedElements = env.getElementsAnnotatedWith(TypeKey.class);
+        // 1. Process Direct @TypeKey Annotations
+        Set<? extends Element> directElements = env.getElementsAnnotatedWith(TypeKey.class);
+        for (Element element : directElements) {
+            // Skip method annotations, as they are part of @TypeKeyConfig and processed below.
+            if (element.getKind() == ElementKind.METHOD) {
+                continue;
+            }
 
-        if (!annotatedElements.isEmpty()) {
-            hasProcessedAnnotations = true;
-            log.printMessage(Diagnostic.Kind.NOTE, "Processing @TypeKey...");
-        }
-
-        for (Element element : annotatedElements) {
-
-            if (! (element.getKind() == ElementKind.CLASS ||
+            if (!(element.getKind() == ElementKind.CLASS ||
                     element.getKind() == ElementKind.RECORD ||
-                    element.getKind() == ElementKind.ENUM)
-            ) {
+                    element.getKind() == ElementKind.ENUM)) {
                 log.printMessage(Diagnostic.Kind.ERROR,
                         "@TypeKey can only be applied to classes, records or enums", element);
                 hasErrors = true;
                 continue;
             }
 
+            hasProcessedAnnotations = true;
             TypeElement type = (TypeElement) element;
             TypeKey annotation = type.getAnnotation(TypeKey.class);
             String key = annotation.value();
 
-            // Validate key is not blank
             if (key == null || key.isBlank()) {
                 log.printMessage(Diagnostic.Kind.ERROR,
                         "@TypeKey value cannot be blank", element);
@@ -86,7 +99,6 @@ public final class TypeIndexProcessor extends AbstractProcessor {
                 continue;
             }
 
-            // Validate key contains only allowed characters
             if (!VALID_KEY_PATTERN.matcher(key).matches()) {
                 log.printMessage(Diagnostic.Kind.ERROR,
                         "@TypeKey value '" + key + "' contains invalid characters. " +
@@ -96,27 +108,94 @@ public final class TypeIndexProcessor extends AbstractProcessor {
                 continue;
             }
 
-            // Check for duplicate keys
-            if (entries.containsKey(key)) {
-                TypeElementInfo existing = entries.get(key);
-                String msg = "Duplicate @TypeKey value '" + key + "' found on "
-                        + type.getQualifiedName() + ". Already used by "
-                        + existing.qualifiedName;
-                log.printMessage(Diagnostic.Kind.ERROR, msg, element);
+            String qualifiedName = type.getQualifiedName().toString();
+            registerAndValidate(key, qualifiedName, element, "direct", "class " + qualifiedName);
+        }
 
-                // Also report on the first occurrence for clarity
+        // 2. Process @TypeKeyConfig External Configurations
+        Set<? extends Element> configElements = env.getElementsAnnotatedWith(TypeKeyConfig.class);
+        for (Element element : configElements) {
+            if (element.getKind() != ElementKind.INTERFACE) {
                 log.printMessage(Diagnostic.Kind.ERROR,
-                        "First usage of @TypeKey(\"" + key + "\")",
-                        existing.element);
-
+                        "@TypeKeyConfig can only be applied to interfaces", element);
                 hasErrors = true;
                 continue;
             }
 
-            entries.put(key, new TypeElementInfo(
-                    type.getQualifiedName().toString(),
-                    element
-            ));
+            hasProcessedAnnotations = true;
+            TypeElement configInterface = (TypeElement) element;
+            String configName = configInterface.getQualifiedName().toString();
+
+            for (Element enclosed : configInterface.getEnclosedElements()) {
+                if (enclosed.getKind() != ElementKind.METHOD) {
+                    continue;
+                }
+
+                ExecutableElement method = (ExecutableElement) enclosed;
+                TypeKey typeKeyAnnotation = method.getAnnotation(TypeKey.class);
+                if (typeKeyAnnotation == null) {
+                    continue; // Skip methods not annotated with @TypeKey
+                }
+
+                // Validate parameters
+                if (!method.getParameters().isEmpty()) {
+                    log.printMessage(Diagnostic.Kind.ERROR,
+                            "Methods in @TypeKeyConfig interfaces must have zero parameters", method);
+                    hasErrors = true;
+                    continue;
+                }
+
+                // Validate return type (must be declared, e.g. not primitive, void or array)
+                TypeMirror returnType = method.getReturnType();
+                if (returnType.getKind() != javax.lang.model.type.TypeKind.DECLARED) {
+                    log.printMessage(Diagnostic.Kind.ERROR,
+                            "Return type of method in @TypeKeyConfig must be a class, record or enum", method);
+                    hasErrors = true;
+                    continue;
+                }
+
+                DeclaredType declaredType = (DeclaredType) returnType;
+
+                // Validate no parameterized generic type arguments (e.g. List<String>)
+                if (!declaredType.getTypeArguments().isEmpty()) {
+                    log.printMessage(Diagnostic.Kind.ERROR,
+                            "Return type of method in @TypeKeyConfig cannot be a parameterized generic type", method);
+                    hasErrors = true;
+                    continue;
+                }
+
+                TypeElement returnElement = (TypeElement) processingEnv.getTypeUtils().asElement(returnType);
+                if (returnElement == null || !(returnElement.getKind() == ElementKind.CLASS ||
+                        returnElement.getKind() == ElementKind.RECORD ||
+                        returnElement.getKind() == ElementKind.ENUM)) {
+                    log.printMessage(Diagnostic.Kind.ERROR,
+                            "Return type of method in @TypeKeyConfig must be a class, record or enum", method);
+                    hasErrors = true;
+                    continue;
+                }
+
+                String key = typeKeyAnnotation.value();
+
+                if (key == null || key.isBlank()) {
+                    log.printMessage(Diagnostic.Kind.ERROR,
+                            "@TypeKey value cannot be blank", method);
+                    hasErrors = true;
+                    continue;
+                }
+
+                if (!VALID_KEY_PATTERN.matcher(key).matches()) {
+                    log.printMessage(Diagnostic.Kind.ERROR,
+                            "@TypeKey value '" + key + "' contains invalid characters. " +
+                                    "Only alphanumeric characters and '.', '-', '#', '_' are allowed",
+                            method);
+                    hasErrors = true;
+                    continue;
+                }
+
+                String targetClassName = returnElement.getQualifiedName().toString();
+                String declSource = configName + "." + method.getSimpleName() + "()";
+                registerAndValidate(key, targetClassName, method, "config", declSource);
+            }
         }
 
         if (env.processingOver()) {
@@ -129,13 +208,69 @@ public final class TypeIndexProcessor extends AbstractProcessor {
             } else {
                 if (!hasProcessedAnnotations) {
                     log.printMessage(Diagnostic.Kind.WARNING,
-                            "No @TypeKey annotations found. Registry will be empty.");
+                            "No @TypeKey or @TypeKeyConfig annotations found. Registry will be empty.");
                 }
                 writeProvider();
             }
         }
 
         return true;
+    }
+
+    private void registerAndValidate(String key, String qualifiedName, Element element, String source, String declSource) {
+        Messager log = processingEnv.getMessager();
+        RegistryEntry newEntry = new RegistryEntry(key, qualifiedName, element, source, declSource);
+
+        // 1. Check Key Conflict (same key points to different classes)
+        if (keyToEntry.containsKey(key)) {
+            RegistryEntry existing = keyToEntry.get(key);
+            if (!existing.qualifiedName.equals(qualifiedName)) {
+                String msg = "Duplicate @TypeKey value '" + key + "' found on "
+                        + declSource + ". Already used by " + existing.declSource;
+                log.printMessage(Diagnostic.Kind.ERROR, msg, element);
+                log.printMessage(Diagnostic.Kind.ERROR, "First usage of @TypeKey(\"" + key + "\")", existing.element);
+                hasErrors = true;
+                return;
+            } else {
+                // Same key, same class. Check direct/config conflict
+                if (existing.source.equals("direct") || source.equals("direct")) {
+                    String msg = "Conflict: Type '" + qualifiedName + "' is registered both directly on the class and via @TypeKeyConfig on " + declSource;
+                    log.printMessage(Diagnostic.Kind.ERROR, msg, element);
+                    log.printMessage(Diagnostic.Kind.ERROR, "Conflicting direct registration", existing.element);
+                    hasErrors = true;
+                    return;
+                }
+                // Both are configs with the same mapping -> allowed, do not register again.
+                return;
+            }
+        }
+
+        // 2. Check Type Conflict (same class registered with different keys)
+        if (classToEntry.containsKey(qualifiedName)) {
+            RegistryEntry existing = classToEntry.get(qualifiedName);
+            if (!existing.key.equals(key)) {
+                String msg = "Type '" + qualifiedName + "' is registered with conflicting keys: '"
+                        + key + "' (on " + declSource + ") and '" + existing.key + "' (on " + existing.declSource + ")";
+                log.printMessage(Diagnostic.Kind.ERROR, msg, element);
+                log.printMessage(Diagnostic.Kind.ERROR, "Conflicting key registration", existing.element);
+                hasErrors = true;
+                return;
+            } else {
+                // Same key, same class. Check direct/config conflict
+                if (existing.source.equals("direct") || source.equals("direct")) {
+                    String msg = "Conflict: Type '" + qualifiedName + "' is registered both directly on the class and via @TypeKeyConfig on " + declSource;
+                    log.printMessage(Diagnostic.Kind.ERROR, msg, element);
+                    log.printMessage(Diagnostic.Kind.ERROR, "Conflicting direct registration", existing.element);
+                    hasErrors = true;
+                    return;
+                }
+                // Both are configs with the same mapping -> allowed.
+                return;
+            }
+        }
+
+        keyToEntry.put(key, newEntry);
+        classToEntry.put(qualifiedName, newEntry);
     }
 
     private void writeProvider() {
@@ -150,7 +285,7 @@ public final class TypeIndexProcessor extends AbstractProcessor {
             }
 
             log.printMessage(Diagnostic.Kind.NOTE,
-                    "Generated RegistryProviderImpl with " + entries.size() + " entries");
+                    "Generated RegistryProviderImpl with " + keyToEntry.size() + " entries");
 
         } catch (IOException e) {
             log.printMessage(Diagnostic.Kind.ERROR,
@@ -161,20 +296,20 @@ public final class TypeIndexProcessor extends AbstractProcessor {
     private void writeRegistryClass(Writer out) throws IOException {
         out.write("""
                 package io.github.cyfko.typeindex.providers;
-
+ 
                 import java.util.Map;
                 import javax.annotation.processing.Generated;
-
+ 
                 @Generated("io.github.cyfko.typeindex.processor.TypeIndexProcessor")
                 public final class RegistryProviderImpl implements RegistryProvider {
-
+ 
                     private static final Map<String, Class<?>> REGISTRY = Map.ofEntries(
                 """);
 
         int i = 0;
-        int last = entries.size() - 1;
+        int last = keyToEntry.size() - 1;
 
-        for (var entry : entries.entrySet()) {
+        for (var entry : keyToEntry.entrySet()) {
             String key = escapeJavaString(entry.getKey());
             String className = entry.getValue().qualifiedName;
 
@@ -187,7 +322,7 @@ public final class TypeIndexProcessor extends AbstractProcessor {
 
         out.write("""
                     );
-
+ 
                     @Override
                     public Map<String, Class<?>> getRegistry() {
                         return REGISTRY;
@@ -196,11 +331,6 @@ public final class TypeIndexProcessor extends AbstractProcessor {
                 """);
     }
 
-    /**
-     * Escapes special characters in strings for Java source code.
-     * While our validation restricts keys to safe characters, this provides
-     * defense in depth.
-     */
     private String escapeJavaString(String s) {
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
@@ -209,3 +339,4 @@ public final class TypeIndexProcessor extends AbstractProcessor {
                 .replace("\t", "\\t");
     }
 }
+

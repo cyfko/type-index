@@ -26,9 +26,9 @@ import java.util.stream.Collectors;
  * <h2>Why</h2>
  * <p>
  * Persist and exchange stable logical identifiers instead of fully-qualified class names to keep
- * stored data resilient to refactors (renames, package moves). Classes participating in the
- * application contract should declare {@link TypeKey}, which is validated and indexed at compile time.
- * When {@code @TypeKey} is not present, the fully-qualified class name is used as a fallback key.
+ * stored data resilient to refactors (renames, package moves).
+ * Classes can register their keys either directly using {@link TypeKey} on the class definition, or
+ * non-intrusively from external modules using a configuration interface annotated with {@link TypeKeyConfig}.
  * </p>
  *
  * <h2>Usage</h2>
@@ -55,7 +55,7 @@ import java.util.stream.Collectors;
  * Resolving a key to a {@link Class} proceeds in tiers:
  * </p>
  * <ol>
- *   <li><b>Generated registry</b>: keys of {@code @TypeKey}-annotated application types.</li>
+ *   <li><b>Generated registry</b>: keys of types registered via {@code @TypeKey} or {@code @TypeKeyConfig}.</li>
  *   <li><b>Arrays</b>: suffix {@code "[]"} resolved recursively via the component key.</li>
  *   <li><b>Java primitives</b>: string names of primitive types, e.g. {@code "int"} → {@code int.class}.</li>
  *   <li><b>Classpath class</b>: best‑effort {@link Class#forName(String)} for FQCNs.</li>
@@ -66,15 +66,15 @@ import java.util.stream.Collectors;
  * Converting a {@link Class} to a key proceeds as:
  * </p>
  * <ol>
- *   <li><b>Generated reverse registry</b>: {@code @TypeKey}-annotated types.</li>
+ *   <li><b>Generated reverse registry</b>: classes registered via {@code @TypeKey} or {@code @TypeKeyConfig}.</li>
  *   <li><b>Java primitives</b>: primitive class → its language name (e.g., {@code boolean.class → "boolean"}).</li>
  *   <li><b>Arrays</b>: resolve component key and append {@code "[]"}.</li>
  *   <li><b>Fallback</b>: fully-qualified class name.</li>
  * </ol>
  *
  * <p>
- * For application classes, prefer {@code @TypeKey} to avoid leaking implementation names into
- * persisted keys. Without {@code @TypeKey}, reverse lookup falls back to the FQCN.
+ * For application classes, prefer registering them (either directly via {@code @TypeKey} or externally via {@code @TypeKeyConfig})
+ * to avoid leaking implementation names into persisted keys. Without registration, reverse lookup falls back to the FQCN.
  * </p>
  *
  * @author Frank KOSSI
@@ -267,6 +267,7 @@ public final class TypeKeyRegistry {
      * @throws NullPointerException     If {@code key} or {@code targetType} is {@code null}.
      * @throws IllegalArgumentException If the resolved type does not match {@code targetType}.
      */
+    @SuppressWarnings("unchecked")
     public static <T> Class<T> resolve(String key, Class<T> targetType) {
         Objects.requireNonNull(key, "key cannot be null");
         Objects.requireNonNull(targetType, "targetType cannot be null");
@@ -280,7 +281,6 @@ public final class TypeKeyRegistry {
             );
         }
 
-        //noinspection unchecked
         return (Class<T>) mapped;
     }
 

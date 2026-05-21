@@ -346,6 +346,311 @@ class TypeIndexProcessorTest {
         assertTrue(generatedCode.contains("\"com.example.key\""));
     }
 
+    @Test
+    void testTypeKeyConfigHappyPath() throws IOException {
+        JavaFileObject steps = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.AuthSteps",
+                "package io.github.cyfko.example;",
+                "public class AuthSteps {}"
+        );
+        JavaFileObject otpSent = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.OtpSent",
+                "package io.github.cyfko.example;",
+                "public record OtpSent(String token) {}"
+        );
+        JavaFileObject otpVal = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.OtpValidated",
+                "package io.github.cyfko.example;",
+                "public enum OtpValidated { YES, NO }"
+        );
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.AuthConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "",
+                "@TypeKeyConfig",
+                "public interface AuthConfig {",
+                "    @TypeKey(\"auth.steps\")",
+                "    AuthSteps steps();",
+                "",
+                "    @TypeKey(\"auth.signal.otp-sent\")",
+                "    OtpSent otpSent();",
+                "",
+                "    @TypeKey(\"auth.signal.otp-validated\")",
+                "    OtpValidated otpValidated();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(steps, otpSent, otpVal, config);
+
+        assertThat(compilation).succeeded();
+
+        String generatedCode = getGeneratedRegistryCode(compilation);
+        assertTrue(generatedCode.contains("Map.entry(\"auth.steps\", io.github.cyfko.example.AuthSteps.class)"));
+        assertTrue(generatedCode.contains("Map.entry(\"auth.signal.otp-sent\", io.github.cyfko.example.OtpSent.class)"));
+        assertTrue(generatedCode.contains("Map.entry(\"auth.signal.otp-validated\", io.github.cyfko.example.OtpValidated.class)"));
+    }
+
+    @Test
+    void testTypeKeyConfigCoexistence() throws IOException {
+        JavaFileObject directClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.DirectClass",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "@TypeKey(\"direct-key\")",
+                "public class DirectClass {}"
+        );
+        JavaFileObject externalClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.ExternalClass",
+                "package io.github.cyfko.example;",
+                "public class ExternalClass {}"
+        );
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.CoexistConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "",
+                "@TypeKeyConfig",
+                "public interface CoexistConfig {",
+                "    @TypeKey(\"external-key\")",
+                "    ExternalClass external();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(directClass, externalClass, config);
+
+        assertThat(compilation).succeeded();
+
+        String generatedCode = getGeneratedRegistryCode(compilation);
+        assertTrue(generatedCode.contains("Map.entry(\"direct-key\", io.github.cyfko.example.DirectClass.class)"));
+        assertTrue(generatedCode.contains("Map.entry(\"external-key\", io.github.cyfko.example.ExternalClass.class)"));
+    }
+
+    @Test
+    void testTypeKeyConfigKeyConflict() {
+        JavaFileObject directClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.DirectClass",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "@TypeKey(\"conflict-key\")",
+                "public class DirectClass {}"
+        );
+        JavaFileObject externalClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.ExternalClass",
+                "package io.github.cyfko.example;",
+                "public class ExternalClass {}"
+        );
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.ConflictConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "",
+                "@TypeKeyConfig",
+                "public interface ConflictConfig {",
+                "    @TypeKey(\"conflict-key\")",
+                "    ExternalClass external();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(directClass, externalClass, config);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("Duplicate @TypeKey value 'conflict-key'");
+    }
+
+    @Test
+    void testTypeKeyConfigTypeConflict() {
+        JavaFileObject targetClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.TargetClass",
+                "package io.github.cyfko.example;",
+                "public class TargetClass {}"
+        );
+        JavaFileObject config1 = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.Config1",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public interface Config1 {",
+                "    @TypeKey(\"key-one\")",
+                "    TargetClass method1();",
+                "}"
+        );
+        JavaFileObject config2 = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.Config2",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public interface Config2 {",
+                "    @TypeKey(\"key-two\")",
+                "    TargetClass method2();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(targetClass, config1, config2);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("is registered with conflicting keys");
+        assertThat(compilation).hadErrorContaining("key-one");
+        assertThat(compilation).hadErrorContaining("key-two");
+    }
+
+    @Test
+    void testTypeKeyConfigMethodParametersFail() {
+        JavaFileObject targetClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.TargetClass",
+                "package io.github.cyfko.example;",
+                "public class TargetClass {}"
+        );
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.ParamConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public interface ParamConfig {",
+                "    @TypeKey(\"some-key\")",
+                "    TargetClass methodWithParam(String p1);",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(targetClass, config);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("must have zero parameters");
+    }
+
+    @Test
+    void testTypeKeyConfigVoidReturnFail() {
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.VoidConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public interface VoidConfig {",
+                "    @TypeKey(\"void-key\")",
+                "    void invalidMethod();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(config);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("must be a class, record or enum");
+    }
+
+    @Test
+    void testTypeKeyConfigPrimitiveReturnFail() {
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.PrimitiveConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public interface PrimitiveConfig {",
+                "    @TypeKey(\"primitive-key\")",
+                "    int invalidMethod();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(config);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("must be a class, record or enum");
+    }
+
+    @Test
+    void testTypeKeyConfigNotInterfaceFail() {
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.ClassConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public class ClassConfig {}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(config);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("@TypeKeyConfig can only be applied to interfaces");
+    }
+
+    @Test
+    void testTypeKeyConfigUnannotatedMethodIgnored() throws IOException {
+        JavaFileObject targetClass = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.TargetClass",
+                "package io.github.cyfko.example;",
+                "public class TargetClass {}"
+        );
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.IgnoredConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "@TypeKeyConfig",
+                "public interface IgnoredConfig {",
+                "    @TypeKey(\"valid-key\")",
+                "    TargetClass method1();",
+                "",
+                "    String unannotatedMethod();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(targetClass, config);
+
+        assertThat(compilation).succeeded();
+
+        String generatedCode = getGeneratedRegistryCode(compilation);
+        assertTrue(generatedCode.contains("Map.entry(\"valid-key\", io.github.cyfko.example.TargetClass.class)"));
+        assertFalse(generatedCode.contains("java.lang.String.class"));
+    }
+
+    @Test
+    void testTypeKeyConfigGenericParameterizedReturnFail() {
+        JavaFileObject config = JavaFileObjects.forSourceLines(
+                "io.github.cyfko.example.GenericConfig",
+                "package io.github.cyfko.example;",
+                "import io.github.cyfko.typeindex.TypeKey;",
+                "import io.github.cyfko.typeindex.TypeKeyConfig;",
+                "import java.util.List;",
+                "@TypeKeyConfig",
+                "public interface GenericConfig {",
+                "    @TypeKey(\"list-key\")",
+                "    List<String> listMethod();",
+                "}"
+        );
+
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new TypeIndexProcessor())
+                .compile(config);
+
+        assertThat(compilation).failed();
+        assertThat(compilation).hadErrorContaining("cannot be a parameterized generic type");
+    }
+
     // ==================== Helper Methods ====================
 
     /**
