@@ -817,31 +817,6 @@ public class UserDto { }
 public class UserDto { }
 ```
 
-## IDE Configuration
-
-### IntelliJ IDEA
-
-Enable annotation processing:
-1. Go to `Settings` → `Build, Execution, Deployment` → `Compiler` → `Annotation Processors`
-2. Check `Enable annotation processing`
-3. Rebuild your project
-
-### Eclipse
-
-1. Right-click project → `Properties`
-2. `Java Compiler` → `Annotation Processing`
-3. Check `Enable annotation processing`
-4. Apply and rebuild
-
-### VS Code
-
-Add to `.vscode/settings.json`:
-```json
-{
-    "java.compile.nullAnalysis.mode": "automatic"
-}
-```
-
 ## Troubleshooting
 
 ### Registry Not Generated
@@ -1009,63 +984,6 @@ List<String> eventKeys = allTypes.keySet().stream()
     .collect(Collectors.toList());
 ```
 
-### Integration with Dependency Injection
-
-#### Spring Framework
-
-```java
-@Configuration
-public class TypeRegistryConfig {
-    
-    @Bean
-    public Map<String, Class<?>> typeRegistry() {
-        return TypeKeyRegistry.getRegistryProvider().getRegistry();
-    }
-    
-    @Bean
-    public PluginFactory pluginFactory(ApplicationContext context) {
-        return key -> {
-            Class<?> pluginClass = TypeKeyRegistry.resolve(key);
-            return context.getBean(pluginClass);
-        };
-    }
-    
-    @Bean
-    public TypeKeyResolver typeKeyResolver() {
-        return new TypeKeyResolver() {
-            @Override
-            public Class<?> resolve(String key) {
-                return TypeKeyRegistry.resolve(key);
-            }
-            
-            @Override
-            public String keyOf(Class<?> type) {
-                return TypeKeyRegistry.keyOf(type);
-            }
-        };
-    }
-}
-```
-
-#### Google Guice
-
-```java
-public class TypeRegistryModule extends AbstractModule {
-    @Override
-    protected void configure() {
-        // Bind registry provider
-        bind(RegistryProvider.class)
-            .toInstance(TypeKeyRegistry.getRegistryProvider());
-        
-        // Bind all registered types
-        RegistryProvider provider = TypeKeyRegistry.getRegistryProvider();
-        provider.getRegistry().forEach((key, clazz) -> {
-            bind(clazz).in(Singleton.class);
-        });
-    }
-}
-```
-
 ### Custom Serialization/Deserialization
 
 #### Jackson Integration
@@ -1117,23 +1035,23 @@ git clone https://github.com/cyfko/typeindex.git
 cd typeindex
 
 # Build with Maven
-mvn clean install
+./mvnw clean install
 
 # Run tests
-mvn test
+./mvnw test
 ```
 
 ### Running Tests
 
 ```bash
 # Run all tests
-mvn test
+./mvnw test
 
 # Run specific test
-mvn test -Dtest=TypeIndexProcessorTest
+./mvnw test -Dtest=TypeIndexProcessorTest
 
 # Run with verbose output
-mvn test -X
+./mvnw test -X
 ```
 
 ## License
@@ -1145,16 +1063,6 @@ This project is licensed under the Apache License 2.0 - see the LICENSE file for
 - **Issues:** [GitHub Issues](https://github.com/cyfko/typeindex/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/cyfko/typeindex/discussions)
 - **Documentation:** [Wiki](https://github.com/cyfko/typeindex/wiki)
-
-## Changelog
-
-### Version 1.0.0 (2025-12-03)
-- Initial release
-- Compile-time type registry generation
-- Support for `.`, `-`, `#`, `_` in keys
-- Comprehensive validation and error reporting
-- Thread-safe lazy initialization
-- Zero runtime dependencies
 
 ## Acknowledgments
 
